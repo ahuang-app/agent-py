@@ -752,3 +752,26 @@ class GraphCheckpointModel(Base):
         nullable=False,
         default=utc_now,
     )
+
+
+class LlmUsageEventModel(Base):
+    """Owner-scoped token usage event for one LLM call."""
+
+    __tablename__ = "llm_usage_events"
+    __table_args__ = (
+        Index("ix_llm_usage_events_owner_created", "owner_user_id", "created_at"),
+        Index("ix_llm_usage_events_created", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    estimated: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+    )

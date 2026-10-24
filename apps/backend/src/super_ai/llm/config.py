@@ -21,6 +21,45 @@ class LlmConfigurationError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class LlmBudgetConfig:
+    """Optional token budgets enforced by the application."""
+
+    per_call_max_output_tokens: int | None = None
+    per_user_daily_tokens: int | None = None
+    global_monthly_tokens: int | None = None
+
+
+def _optional_positive_int(raw: Mapping[object, object], key: str) -> int | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ProjectConfigurationError(
+            f"Project config field must be a positive integer when present: llm.budget.{key}"
+        )
+    return value
+
+
+def load_llm_budget_config(raw_config: Mapping[object, object]) -> LlmBudgetConfig:
+    """Parse the optional llm.budget section with strict validation."""
+    budget_raw = raw_config.get("budget")
+    if budget_raw is None:
+        return LlmBudgetConfig()
+    if not isinstance(budget_raw, Mapping):
+        raise ProjectConfigurationError(
+            "Project config field must be an object when present: llm.budget"
+        )
+    budget_mapping = cast(Mapping[object, object], budget_raw)
+    return LlmBudgetConfig(
+        per_call_max_output_tokens=_optional_positive_int(
+            budget_mapping, "perCallMaxOutputTokens"
+        ),
+        per_user_daily_tokens=_optional_positive_int(budget_mapping, "perUserDailyTokens"),
+        global_monthly_tokens=_optional_positive_int(budget_mapping, "globalMonthlyTokens"),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class LlmProviderConfig:
     """Typed runtime configuration for a configured LLM provider."""
 
@@ -36,6 +75,7 @@ class LlmProviderConfig:
     temperature: float
     timeout_seconds: float
     max_retries: int
+    budget: LlmBudgetConfig = field(default_factory=LlmBudgetConfig)
 
 
 def load_llm_provider_config(
@@ -75,6 +115,7 @@ def load_llm_provider_config(
             temperature=required_float(raw_config, "temperature"),
             timeout_seconds=required_float(raw_config, "timeoutSeconds"),
             max_retries=required_int(raw_config, "maxRetries"),
+            budget=load_llm_budget_config(cast(Mapping[object, object], raw_config)),
         )
     except ProjectConfigurationError as exc:
         raise LlmConfigurationError(str(exc)) from exc

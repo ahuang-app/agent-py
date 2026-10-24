@@ -132,16 +132,21 @@ def build_default_llm_provider(config_path: Path | str | None = None) -> LlmProv
 
 
 def _create_chat_openai_model(config: LlmProviderConfig) -> ChatModel:
+    model = ChatOpenAI(
+        api_key=lambda: config.api_key,
+        base_url=config.base_url,
+        model=config.chat_model,
+        temperature=config.temperature,
+        timeout=config.timeout_seconds,
+        max_retries=config.max_retries,
+        stream_usage=True,
+    )
+    max_output_tokens = config.budget.per_call_max_output_tokens
+    if max_output_tokens is not None:
+        model.max_tokens = max_output_tokens
     return cast(
         ChatModel,
-        ChatOpenAI(
-            api_key=lambda: config.api_key,
-            base_url=config.base_url,
-            model=config.chat_model,
-            temperature=config.temperature,
-            timeout=config.timeout_seconds,
-            max_retries=config.max_retries,
-        ),
+        model,
     )
 
 

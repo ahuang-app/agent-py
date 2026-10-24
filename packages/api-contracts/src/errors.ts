@@ -42,6 +42,11 @@ export const API_ERROR_CODES = {
     httpStatus: 404,
     message: "The requested resource was not found."
   },
+  BUSINESS_LLM_BUDGET_EXCEEDED: {
+    category: "business",
+    httpStatus: 429,
+    message: "模型用量已达到预算限额，请稍后再试或联系管理员调整预算。"
+  },
   VALIDATION_INVALID_ARGUMENT: {
     category: "validation",
     httpStatus: 400,

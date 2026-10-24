@@ -24,6 +24,19 @@ cp config/user.project.template.json config/user.project.json
 
 模板中的凭据字段必须保持为空。即使仓库是私有仓库，也不要提交真实密钥；已暴露的密钥应在对应云平台立即轮换。
 
+## LLM 用量预算与公网部署
+
+公开部署实例前，建议在本地 `config/project.json` 中配置 `llm.budget` 预算，防止陌生注册用户无限消耗模型额度：
+
+| 配置字段 | 含义 |
+| --- | --- |
+| `llm.budget.perCallMaxOutputTokens` | 单次对话/诊断调用的输出 token 上限 |
+| `llm.budget.perUserDailyTokens` | 每用户每日（UTC 日界）token 预算，超限拒绝并返回 `BUSINESS_LLM_BUDGET_EXCEEDED` |
+| `llm.budget.globalMonthlyTokens` | 全平台每月（UTC 月界）token 预算，超限对所有用户拒绝 |
+| `backend.corsAllowOrigins` | 允许的跨域前端来源列表；公网前端域名需加入此列表 |
+
+三个预算字段留空（`null`）即不限额；用量记录在 SQLite `llm_usage_events` 台账中（真实 usage 优先，embedding 为估算值并标记）。台账按用户隔离，可按月归档清理。
+
 ## 真实日志与本地告警样例
 
 真实 CLS 日志上传和本地 active-alert 演示属于显式运维流程，不是常规应用启动的一部分。请遵循[真实 CLS 日志与告警教程](tutorials/real-log-and-alert.md)，分别执行其中的日志上传脚本和本地告警命令。

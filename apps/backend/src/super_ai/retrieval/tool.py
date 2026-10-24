@@ -11,7 +11,7 @@ from typing import Protocol, TypeVar
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from super_ai.llm import EmbeddingModel, RerankModel
+from super_ai.llm import EmbeddingModel, LlmBudgetService, RerankModel, estimate_text_tokens
 from super_ai.vector_store import StoredVectorChunk, VectorSearchResult
 
 from .hybrid import (
@@ -184,10 +184,12 @@ class KnowledgeRetrievalTool:
         embedding_model: EmbeddingModel,
         vector_store: RetrievalVectorStore,
         rerank_model: RerankModel,
+        budget_service: LlmBudgetService | None = None,
     ) -> None:
         self._embedding_model = embedding_model
         self._vector_store = vector_store
         self._rerank_model = rerank_model
+        self._budget_service = budget_service
 
     async def run(
         self,
@@ -286,6 +288,14 @@ class KnowledgeRetrievalTool:
         knowledge_base_ids: Sequence[str],
     ) -> list[VectorSearchResult]:
         vectors = await self._embedding_model.aembed_documents([query])
+        if self._budget_service is not None:
+            await self._budget_service.record_usage(
+                owner_user_id=owner_user_id,
+                kind="embedding",
+                input_tokens=estimate_text_tokens([query]),
+                output_tokens=0,
+                estimated=True,
+            )
         query_vector = _single_query_vector(vectors)
         return await asyncio.to_thread(
             self._vector_store.search_chunks,

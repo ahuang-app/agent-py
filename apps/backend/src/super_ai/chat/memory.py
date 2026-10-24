@@ -9,7 +9,12 @@ from typing import Any, Literal, cast
 
 from langchain_core.messages.utils import count_tokens_approximately
 
-from super_ai.llm import LlmProvider
+from super_ai.llm import (
+    LlmBudgetService,
+    LlmProvider,
+    capture_usage_metadata,
+    estimate_text_tokens,
+)
 from super_ai.memory.repositories import (
     ChatMessageRecord,
     ChatSessionRecord,
@@ -46,12 +51,14 @@ class ChatMemoryService:
         repositories: MemoryRepositories,
         llm_provider: LlmProvider,
         context_window_tokens: int,
+        budget_service: LlmBudgetService | None = None,
     ) -> None:
         if context_window_tokens <= 0:
             raise ValueError("context_window_tokens must be positive")
         self._repositories = repositories
         self._llm_provider = llm_provider
         self.context_window_tokens = context_window_tokens
+        self._budget_service = budget_service
 
     async def prepare_message(
         self,
@@ -200,7 +207,31 @@ class ChatMemoryService:
             f"已有摘要：\n{session.memory_summary or '无'}\n\n"
             f"新增对话：\n{transcript}"
         )
+        if self._budget_service is not None:
+            await self._budget_service.ensure_within_budget(
+                owner_user_id=owner_user_id,
+                kind="memory",
+                estimated_cost_tokens=estimate_text_tokens([prompt]),
+            )
         response = await self._llm_provider.create_chat_model().ainvoke(prompt)
+        if self._budget_service is not None:
+            usage = capture_usage_metadata(getattr(response, "usage_metadata", None))
+            if usage is not None:
+                await self._budget_service.record_usage(
+                    owner_user_id=owner_user_id,
+                    kind="memory",
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                )
+            else:
+                output_text = _extract_model_text(response)
+                await self._budget_service.record_usage(
+                    owner_user_id=owner_user_id,
+                    kind="memory",
+                    input_tokens=estimate_text_tokens([prompt]),
+                    output_tokens=estimate_text_tokens([output_text]),
+                    estimated=True,
+                )
         summary = _extract_model_text(response).strip()
         if not summary:
             raise RuntimeError("The model returned an empty memory summary.")

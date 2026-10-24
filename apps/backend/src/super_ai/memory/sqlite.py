@@ -1542,6 +1542,7 @@ def create_sqlite_memory_repositories(
     """Create a repository bundle backed by SQLite-compatible SQLAlchemy sessions."""
     from super_ai.memory.extended_sqlite import (
         SQLiteBackgroundJobRepository,
+        SQLiteLlmUsageRepository,
         SQLiteMcpConnectionRepository,
         SQLiteUserFeedbackRepository,
     )
@@ -1558,6 +1559,7 @@ def create_sqlite_memory_repositories(
         background_jobs=SQLiteBackgroundJobRepository(session_factory),
         feedback=SQLiteUserFeedbackRepository(session_factory),
         mcp_connections=SQLiteMcpConnectionRepository(session_factory),
+        llm_usage=SQLiteLlmUsageRepository(session_factory),
     )
 
 

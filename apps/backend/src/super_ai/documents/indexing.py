@@ -11,7 +11,7 @@ from typing import Protocol, cast
 
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
-from super_ai.llm import EmbeddingModel
+from super_ai.llm import EmbeddingModel, LlmBudgetService, estimate_text_tokens
 from super_ai.memory.repositories import (
     DocumentIndexTaskRecord,
     KnowledgeDocumentRecord,
@@ -86,12 +86,14 @@ class DocumentIndexingService:
         vector_store: IndexVectorStore,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+        budget_service: LlmBudgetService | None = None,
     ) -> None:
         self._repositories = repositories
         self._embedding_model = embedding_model
         self._vector_store = vector_store
         self._chunk_size = chunk_size
         self._chunk_overlap = chunk_overlap
+        self._budget_service = budget_service
 
     async def run_task(self, *, owner_user_id: str, task_id: str) -> DocumentIndexTaskRecord:
         """Run a persisted index task and return its final state."""
@@ -133,9 +135,16 @@ class DocumentIndexingService:
             )
             if not chunks:
                 raise DocumentIndexingError("Document has no indexable text.")
-            vectors = await self._embedding_model.aembed_documents(
-                [chunk.content for chunk in chunks]
-            )
+            chunk_texts = [chunk.content for chunk in chunks]
+            vectors = await self._embedding_model.aembed_documents(chunk_texts)
+            if self._budget_service is not None:
+                await self._budget_service.record_usage(
+                    owner_user_id=owner_user_id,
+                    kind="embedding",
+                    input_tokens=estimate_text_tokens(chunk_texts),
+                    output_tokens=0,
+                    estimated=True,
+                )
             if len(vectors) != len(chunks):
                 raise DocumentIndexingError(
                     "Embedding provider returned an unexpected vector count."

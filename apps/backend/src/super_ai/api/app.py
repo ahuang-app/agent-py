@@ -73,9 +73,14 @@ from super_ai.foundation import get_foundation_info
 from super_ai.jobs import BackgroundJobContext, BackgroundJobRuntime, JobCancelled
 from super_ai.llm import (
     EmbeddingModel,
+    LlmBudgetConfig,
+    LlmBudgetExceededError,
+    LlmBudgetService,
+    LlmConfigurationError,
     LlmProvider,
     RerankModel,
     build_default_llm_provider,
+    estimate_text_tokens,
     load_llm_provider_config,
 )
 from super_ai.mcp_client import LocalMcpClient
@@ -119,7 +124,12 @@ from super_ai.observability import (
     reset_request_id,
     set_request_id,
 )
-from super_ai.project_config import project_config_section, required_int, required_str
+from super_ai.project_config import (
+    ProjectConfigurationError,
+    project_config_section,
+    required_int,
+    required_str,
+)
 from super_ai.retrieval import KnowledgeRetrievalTool, RetrievalVectorStore
 from super_ai.vector_store import (
     MilvusHealthCheckResult,
@@ -134,6 +144,32 @@ from .responses import ApiErrorException, error_response, success_response
 bearer_scheme = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
 BearerCredentials = Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)]
+
+_DEFAULT_CORS_ALLOW_ORIGINS = ("http://127.0.0.1:5173", "http://localhost:5173")
+
+
+def resolve_cors_allow_origins(config_path: str | Path | None) -> list[str]:
+    """Resolve the CORS allowlist from backend.corsAllowOrigins with safe defaults."""
+    try:
+        section = project_config_section("backend", config_path=config_path)
+    except ProjectConfigurationError:
+        return list(_DEFAULT_CORS_ALLOW_ORIGINS)
+    raw = section.get("corsAllowOrigins")
+    if raw is None:
+        return list(_DEFAULT_CORS_ALLOW_ORIGINS)
+    if not isinstance(raw, list):
+        raise ProjectConfigurationError(
+            "Project config field must be a list of non-empty strings: "
+            "backend.corsAllowOrigins"
+        )
+    entries = cast(list[object], raw)
+    origins = [item for item in entries if isinstance(item, str)]
+    if len(origins) != len(entries) or any(not item.strip() for item in origins):
+        raise ProjectConfigurationError(
+            "Project config field must be a list of non-empty strings: "
+            "backend.corsAllowOrigins"
+        )
+    return origins
 
 
 class RegisterRequest(BaseModel):
@@ -318,7 +354,7 @@ def create_app(
     app = FastAPI(title="Super AI API", version="0.1.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+        allow_origins=resolve_cors_allow_origins(resolved_project_config_path),
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -1242,12 +1278,15 @@ def create_app(
             owner_user_id=user.id, session_id=session_id
         )
         service, prompt = await _chat_memory_context(request, owner_user_id=user.id)
-        updated = await service.compact(
-            owner_user_id=user.id,
-            session=session,
-            history=history,
-            system_prompt=prompt,
-        )
+        try:
+            updated = await service.compact(
+                owner_user_id=user.id,
+                session=session,
+                history=history,
+                system_prompt=prompt,
+            )
+        except LlmBudgetExceededError as exc:
+            raise ApiErrorException("BUSINESS_LLM_BUDGET_EXCEEDED", exc.message) from exc
         return success_response(
             request, _chat_session_payload(updated, service.context_window_tokens)
         )
@@ -1319,6 +1358,24 @@ def create_app(
         )
         if session is None:
             raise ApiErrorException("AUTH_FORBIDDEN")
+        budget_service = _llm_budget_service(request)
+        if budget_service is not None:
+            try:
+                provider_config = load_llm_provider_config(
+                    config_path=request.app.state.project_config_path
+                )
+                per_call_cap = provider_config.budget.per_call_max_output_tokens
+            except LlmConfigurationError:
+                per_call_cap = None
+            try:
+                await budget_service.ensure_within_budget(
+                    owner_user_id=user.id,
+                    kind="chat",
+                    estimated_cost_tokens=estimate_text_tokens([body.content])
+                    + (per_call_cap or 0),
+                )
+            except LlmBudgetExceededError as exc:
+                raise ApiErrorException("BUSINESS_LLM_BUDGET_EXCEEDED", exc.message) from exc
         service = ChatStreamingService(
             repositories=repositories,
             agent_runner=_chat_agent_runner(request),
@@ -2092,7 +2149,32 @@ def _chat_memory_service(request: Request) -> ChatMemoryService:
         repositories=_memory_repositories(request),
         llm_provider=_llm_provider(request),
         context_window_tokens=_context_window_tokens(request),
+        budget_service=_llm_budget_service(request),
     )
+
+
+def _llm_budget_service(request: Request) -> LlmBudgetService | None:
+    service = cast(
+        LlmBudgetService | None, getattr(request.app.state, "llm_budget_service", None)
+    )
+    if service is not None:
+        return service
+    if getattr(request.app.state, "llm_budget_service_resolved", False):
+        return None
+    repository = _memory_repositories(request).llm_usage
+    if repository is None:
+        request.app.state.llm_budget_service_resolved = True
+        return None
+    try:
+        provider_config = load_llm_provider_config(
+            config_path=request.app.state.project_config_path
+        )
+        budget = provider_config.budget
+    except LlmConfigurationError:
+        budget = LlmBudgetConfig()
+    service = LlmBudgetService(repository=repository, budget=budget)
+    request.app.state.llm_budget_service = service
+    return service
 
 
 async def _chat_memory_context(
@@ -2114,11 +2196,13 @@ def _chat_agent_runner(request: Request) -> ChatAgentRunner:
             embedding_model=_embedding_model(request),
             vector_store=cast(RetrievalVectorStore, _vector_store(request)),
             rerank_model=_rerank_model(request),
+            budget_service=_llm_budget_service(request),
         )
         runner = LangChainChatAgentRunner(
             llm_provider=_llm_provider(request),
             retrieval_tool=retrieval_tool,
             mcp_client_provider=_mcp_connection_service(request),
+            budget_service=_llm_budget_service(request),
         )
         request.app.state.chat_agent_runner = runner
     return cast(ChatAgentRunner, runner)
@@ -2157,6 +2241,7 @@ def _aiops_diagnostic_runner(request: Request) -> AiopsDiagnosticRunner:
                 embedding_model=_embedding_model(request),
                 vector_store=cast(RetrievalVectorStore, _vector_store(request)),
                 rerank_model=_rerank_model(request),
+                budget_service=_llm_budget_service(request),
             ),
             mcp_client_provider=_mcp_connection_service(request),
             cls_region=required_str(cls_log_config, "region"),
@@ -2165,6 +2250,7 @@ def _aiops_diagnostic_runner(request: Request) -> AiopsDiagnosticRunner:
                 repositories=_memory_repositories(request),
                 index_task_scheduler=_index_task_scheduler(request),
             ),
+            budget_service=_llm_budget_service(request),
         )
         request.app.state.aiops_diagnostic_runner = runner
     return runner
@@ -2175,6 +2261,7 @@ def _document_indexing_service(request: Request) -> DocumentIndexingService:
         repositories=_memory_repositories(request),
         embedding_model=_embedding_model(request),
         vector_store=_document_vector_store(request),
+        budget_service=_llm_budget_service(request),
     )
 
 
@@ -2187,7 +2274,30 @@ def _document_indexing_service_from_app(app: FastAPI) -> DocumentIndexingService
             config_path=app.state.project_config_path
         ).create_embedding_model(),
         vector_store=cast(DocumentVectorStoreProvider, app.state.vector_store),
+        budget_service=_llm_budget_service_from_app(app),
     )
+
+
+def _llm_budget_service_from_app(app: FastAPI) -> LlmBudgetService | None:
+    service = cast(
+        LlmBudgetService | None, getattr(app.state, "llm_budget_service", None)
+    )
+    if service is not None:
+        return service
+    if getattr(app.state, "llm_budget_service_resolved", False):
+        return None
+    repository = cast(MemoryRepositories, app.state.memory_repositories).llm_usage
+    if repository is None:
+        app.state.llm_budget_service_resolved = True
+        return None
+    try:
+        provider_config = load_llm_provider_config(config_path=app.state.project_config_path)
+        budget = provider_config.budget
+    except LlmConfigurationError:
+        budget = LlmBudgetConfig()
+    service = LlmBudgetService(repository=repository, budget=budget)
+    app.state.llm_budget_service = service
+    return service
 
 
 def _index_task_scheduler(request: Request) -> DocumentIndexTaskScheduler:

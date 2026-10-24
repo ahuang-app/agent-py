@@ -16,6 +16,11 @@ ERROR_DEFINITIONS = {
         "The requested operation conflicts with the current resource state.",
     ),
     "BUSINESS_NOT_FOUND": ("business", 404, "The requested resource was not found."),
+    "BUSINESS_LLM_BUDGET_EXCEEDED": (
+        "business",
+        429,
+        "模型用量已达到预算限额，请稍后再试或联系管理员调整预算。",
+    ),
     "VALIDATION_INVALID_ARGUMENT": ("validation", 400, "The request parameters are invalid."),
     "VALIDATION_MISSING_FIELD": ("validation", 422, "A required field is missing."),
     "SYSTEM_INTERNAL_ERROR": ("system", 500, "The system could not complete the request."),

@@ -1172,6 +1172,42 @@ class McpConnectionRepository(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class LlmUsageEventRecord:
+    """One recorded LLM token usage event."""
+
+    id: str
+    owner_user_id: str
+    kind: str
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    estimated: bool
+    created_at: datetime
+
+
+class LlmUsageRepository(Protocol):
+    """Owner-scoped persistence for LLM usage accounting."""
+
+    async def append(
+        self,
+        *,
+        owner_user_id: str,
+        kind: str,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated: bool,
+        created_at: datetime,
+    ) -> None: ...
+
+    async def sum_tokens_for_owner_between(
+        self, *, owner_user_id: str, start_at: datetime, end_at: datetime
+    ) -> int: ...
+
+    async def sum_tokens_between(self, *, start_at: datetime, end_at: datetime) -> int: ...
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryRepositories:
     """Repository bundle for dependency injection."""
 
@@ -1186,3 +1222,4 @@ class MemoryRepositories:
     background_jobs: BackgroundJobRepository | None = None
     feedback: UserFeedbackRepository | None = None
     mcp_connections: McpConnectionRepository | None = None
+    llm_usage: LlmUsageRepository | None = None

@@ -8,6 +8,7 @@ const ERROR_MESSAGES: Readonly<Record<ApiErrorMessage["code"], string>> = {
   AUTH_UNAUTHENTICATED: "请先登录后再继续。",
   BUSINESS_CONFLICT: "该数据已经存在或与当前状态冲突，请确认后重试。",
   BUSINESS_NOT_FOUND: "未找到请求的数据，它可能已被删除或你没有访问权限。",
+  BUSINESS_LLM_BUDGET_EXCEEDED: "模型用量已达到预算限额，请稍后再试或联系管理员调整预算。",
   VALIDATION_INVALID_ARGUMENT: "提交的信息不符合要求，请检查后重试。",
   VALIDATION_MISSING_FIELD: "请补全必填信息后再试。",
   SYSTEM_INTERNAL_ERROR: "系统暂时无法完成该请求，请稍后重试。",

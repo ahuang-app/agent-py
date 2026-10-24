@@ -13,6 +13,7 @@ from time import monotonic
 from typing import Any, Literal, Protocol, TypedDict, cast
 from uuid import uuid4
 
+from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
@@ -24,7 +25,13 @@ from super_ai.chat.configuration import (
 )
 from super_ai.chat.memory import ChatContextLimitReached, ChatMemoryService, memory_payload
 from super_ai.error_catalog import ERROR_DEFINITIONS
-from super_ai.llm import LlmProvider
+from super_ai.llm import (
+    CapturedModelUsage,
+    LlmBudgetService,
+    LlmProvider,
+    capture_usage_metadata,
+    estimate_text_tokens,
+)
 from super_ai.mcp_client import LocalMcpClient, create_current_time_tool
 from super_ai.mcp_connections import McpConnectionService
 from super_ai.memory.repositories import (
@@ -500,11 +507,13 @@ class LangChainChatAgentRunner:
         retrieval_tool: KnowledgeRetrievalTool,
         mcp_client: LocalMcpClient | None = None,
         mcp_client_provider: McpConnectionService | None = None,
+        budget_service: LlmBudgetService | None = None,
     ) -> None:
         self._llm_provider = llm_provider
         self._retrieval_tool = retrieval_tool
         self._mcp_client = mcp_client
         self._mcp_client_provider = mcp_client_provider
+        self._budget_service = budget_service
 
     async def stream(self, request: ChatAgentRequest) -> AsyncIterator[ChatAgentEvent]:
         langchain_tool = create_langchain_knowledge_retrieval_tool(
@@ -533,19 +542,63 @@ class LangChainChatAgentRunner:
             for message in request.messages
             if message.role in {"user", "assistant"}
         ]
+        estimated_input_tokens = estimate_text_tokens(
+            [request.system_prompt, *(str(item.get("content") or "") for item in messages)]
+        )
+        output_parts: list[str] = []
+        captured_usage: CapturedModelUsage | None = None
 
-        async for raw_event in agent.astream_events(
-            cast(Any, {"messages": messages}),
-            version="v2",
-        ):
-            parsed = _agent_event_from_langchain_event(cast(Mapping[str, object], raw_event))
-            if parsed is None:
-                continue
-            if isinstance(parsed, list):
-                for item in parsed:
-                    yield item
-            else:
-                yield parsed
+        try:
+            async for raw_event in agent.astream_events(
+                cast(Any, {"messages": messages}),
+                version="v2",
+            ):
+                event_mapping = cast(Mapping[str, object], raw_event)
+                if event_mapping.get("event") == "on_chat_model_end":
+                    event_data = event_mapping.get("data")
+                    output = (
+                        cast(Mapping[str, object], event_data).get("output")
+                        if isinstance(event_data, Mapping)
+                        else None
+                    )
+                    if captured_usage is None:
+                        captured_usage = capture_usage_metadata(
+                            getattr(output, "usage_metadata", None)
+                        )
+                parsed = _agent_event_from_langchain_event(event_mapping)
+                if parsed is None:
+                    continue
+                if isinstance(parsed, list):
+                    for item in parsed:
+                        if isinstance(item, ChatAgentContentDelta):
+                            output_parts.append(item.delta)
+                        yield item
+                else:
+                    if isinstance(parsed, ChatAgentContentDelta):
+                        output_parts.append(parsed.delta)
+                    yield parsed
+        finally:
+            if self._budget_service is not None:
+                estimated = captured_usage is None
+                input_tokens = (
+                    captured_usage.input_tokens
+                    if captured_usage is not None
+                    else estimated_input_tokens
+                )
+                output_tokens = (
+                    captured_usage.output_tokens
+                    if captured_usage is not None
+                    else count_tokens_approximately(
+                        [{"role": "assistant", "content": "".join(output_parts)}]
+                    )
+                )
+                await self._budget_service.record_usage(
+                    owner_user_id=request.owner_user_id,
+                    kind="chat",
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    estimated=estimated,
+                )
 
 
 def create_load_skill_tool(skills: Sequence[SelectedChatSkill]) -> StructuredTool:

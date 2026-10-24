@@ -6,7 +6,8 @@
   "backend": {
     "host": "127.0.0.1",
     "port": 8000,
-    "memoryDatabaseUrl": "sqlite+aiosqlite:///./var/memory.sqlite3"
+    "memoryDatabaseUrl": "sqlite+aiosqlite:///./var/memory.sqlite3",
+    "corsAllowOrigins": ["http://127.0.0.1:5173", "http://localhost:5173"]
   },
   "frontend": {
     "title": "Super AI",
@@ -24,7 +25,12 @@
     "rerankUrl": "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
     "temperature": 0.2,
     "timeoutSeconds": 120,
-    "maxRetries": 2
+    "maxRetries": 2,
+    "budget": {
+      "perCallMaxOutputTokens": null,
+      "perUserDailyTokens": null,
+      "globalMonthlyTokens": null
+    }
   },
   "chatAssembly": {
     "defaultPromptId": "general-assistant",

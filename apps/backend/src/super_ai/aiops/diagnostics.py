@@ -17,7 +17,12 @@ from langgraph.graph import END, START, StateGraph
 
 from super_ai.aiops.cases import DiagnosisCasePersistor
 from super_ai.error_catalog import ERROR_DEFINITIONS
-from super_ai.llm import LlmProvider
+from super_ai.llm import (
+    LlmBudgetService,
+    LlmProvider,
+    capture_usage_metadata,
+    estimate_text_tokens,
+)
 from super_ai.mcp_client import LocalMcpClient, McpClientError
 from super_ai.mcp_connections import McpConnectionService
 from super_ai.memory.repositories import (
@@ -81,6 +86,7 @@ class AiopsDiagnosticService:
         cls_region: str,
         cls_topic_id: str,
         case_persistor: DiagnosisCasePersistor | None = None,
+        budget_service: LlmBudgetService | None = None,
     ) -> None:
         self._repositories = repositories
         self._llm_provider = llm_provider
@@ -92,6 +98,36 @@ class AiopsDiagnosticService:
         self._cls_region = cls_region
         self._cls_topic_id = cls_topic_id
         self._case_persistor = case_persistor
+        self._budget_service = budget_service
+
+    async def _invoke_with_budget(
+        self, *, owner_user_id: str, kind: str, prompt: str
+    ) -> object:
+        if self._budget_service is not None:
+            await self._budget_service.ensure_within_budget(
+                owner_user_id=owner_user_id,
+                kind=kind,
+                estimated_cost_tokens=estimate_text_tokens([prompt]),
+            )
+        response = await self._llm_provider.create_chat_model().ainvoke(prompt)
+        if self._budget_service is not None:
+            usage = capture_usage_metadata(getattr(response, "usage_metadata", None))
+            if usage is not None:
+                await self._budget_service.record_usage(
+                    owner_user_id=owner_user_id,
+                    kind=kind,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                )
+            else:
+                await self._budget_service.record_usage(
+                    owner_user_id=owner_user_id,
+                    kind=kind,
+                    input_tokens=estimate_text_tokens([prompt]),
+                    output_tokens=estimate_text_tokens([_model_text(response)]),
+                    estimated=True,
+                )
+        return response
 
     async def stream(
         self,
@@ -302,6 +338,7 @@ class AiopsDiagnosticService:
             )
 
         plan, plan_origin = await self._create_plan(
+            owner_user_id=owner_user_id,
             query=query,
             alert=_json_dict(state.get("alert")),
             sop_hits=sop_hits,
@@ -677,7 +714,11 @@ class AiopsDiagnosticService:
         )
         prompt = _report_prompt(state)
         try:
-            response = await self._llm_provider.create_chat_model().ainvoke(prompt)
+            response = await self._invoke_with_budget(
+                owner_user_id=str(state.get("owner_user_id") or ""),
+                kind="aiops",
+                prompt=prompt,
+            )
         except Exception:
             return fallback, "fallback"
         report = _clean_markdown_report(_model_text(response))
@@ -689,6 +730,7 @@ class AiopsDiagnosticService:
     async def _create_plan(
         self,
         *,
+        owner_user_id: str,
         query: str,
         alert: JsonDict,
         sop_hits: Sequence[JsonDict],
@@ -704,7 +746,9 @@ class AiopsDiagnosticService:
             f"No SOP matched: {str(no_sop_matched).lower()}. Prefer SearchLog for CLS evidence."
         )
         try:
-            response = await self._llm_provider.create_chat_model().ainvoke(prompt)
+            response = await self._invoke_with_budget(
+                owner_user_id=owner_user_id, kind="aiops", prompt=prompt
+            )
             plan = _validated_plan(_model_text(response), available_tools)
         except Exception:
             plan = []

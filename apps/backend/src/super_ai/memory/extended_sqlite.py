@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import cast
+from uuid import uuid4
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -12,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from super_ai.memory.models import (
     BackgroundJobEventModel,
     BackgroundJobModel,
+    LlmUsageEventModel,
     McpConnectionModel,
     UserFeedbackModel,
     utc_now,
@@ -601,6 +603,62 @@ def _json_dict(value: object) -> JsonDict:
     if not isinstance(value, Mapping):
         return {}
     return {str(key): item for key, item in cast(Mapping[object, object], value).items()}
+
+
+class SQLiteLlmUsageRepository:
+    """SQLite persistence for owner-scoped LLM usage events."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def append(
+        self,
+        *,
+        owner_user_id: str,
+        kind: str,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated: bool,
+        created_at: datetime,
+    ) -> None:
+        async with self._session_factory() as session:
+            session.add(
+                LlmUsageEventModel(
+                    id=f"llm_usage_{uuid4().hex}",
+                    owner_user_id=owner_user_id,
+                    kind=kind,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                    estimated=estimated,
+                    created_at=created_at,
+                )
+            )
+            await session.commit()
+
+    async def sum_tokens_for_owner_between(
+        self, *, owner_user_id: str, start_at: datetime, end_at: datetime
+    ) -> int:
+        async with self._session_factory() as session:
+            total = await session.scalar(
+                select(func.coalesce(func.sum(LlmUsageEventModel.total_tokens), 0)).where(
+                    LlmUsageEventModel.owner_user_id == owner_user_id,
+                    LlmUsageEventModel.created_at >= start_at,
+                    LlmUsageEventModel.created_at < end_at,
+                )
+            )
+        return int(total or 0)
+
+    async def sum_tokens_between(self, *, start_at: datetime, end_at: datetime) -> int:
+        async with self._session_factory() as session:
+            total = await session.scalar(
+                select(func.coalesce(func.sum(LlmUsageEventModel.total_tokens), 0)).where(
+                    LlmUsageEventModel.created_at >= start_at,
+                    LlmUsageEventModel.created_at < end_at,
+                )
+            )
+        return int(total or 0)
 
 
 def _ensure_utc(value: datetime) -> datetime:
