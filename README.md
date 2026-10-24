@@ -175,6 +175,12 @@ npm run dev -- --host 127.0.0.1
 
 上传 CLS 日志、发布本地 Alertmanager 告警、索引 SOP 与从前端执行 AIOps 诊断均为显式操作，不属于日常启动流程。请按照[真实日志与告警教程](docs/tutorials/real-log-and-alert.md)执行。
 
+## 在线文档站
+
+项目文档与 OpenSpec 变更 WIKI 发布在 GitHub Pages：**https://ahuang-app.github.io/agent-py/**。
+
+站点由 `.github/workflows/deploy-docs.yml` 自动发布：`docs/`、`openspec/` 或构建脚本变更合入 `main` 后自动重新构建，也可在 Actions 页面手动触发（workflow_dispatch）。本地构建使用根路径，CI 构建注入 `DOCS_BASE=/agent-py/` 子路径。
+
 ## 验证命令
 
 在仓库根目录执行 OpenSpec 验证：

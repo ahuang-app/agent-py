@@ -77,6 +77,8 @@ export default defineConfig({
   lang: "zh-CN",
   title: "Super AI WIKI",
   description: "Super AI 项目文档与 OpenSpec 变更记录",
+  // GitHub Pages 部署在仓库子路径下，由 CI 注入 DOCS_BASE=/agent-py/；本地构建保持根路径。
+  base: process.env.DOCS_BASE ?? "/",
   cleanUrls: true,
   themeConfig: {
     nav: [
