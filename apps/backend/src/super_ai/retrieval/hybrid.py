@@ -64,12 +64,30 @@ def rank_bm25_documents(
     limit: int = BM25_CANDIDATE_LIMIT,
 ) -> list[Bm25Rank]:
     """Rank documents with BM25 while excluding documents with no token overlap."""
+    return rank_bm25_tokenized(
+        query=query,
+        corpus_tokens=[tokenize_hybrid_text(document) for document in documents],
+        documents=documents,
+        limit=limit,
+    )
+
+
+def rank_bm25_tokenized(
+    *,
+    query: str,
+    corpus_tokens: Sequence[Sequence[str]],
+    documents: Sequence[str],
+    limit: int = BM25_CANDIDATE_LIMIT,
+    scorer: _Bm25Scorer | None = None,
+) -> list[Bm25Rank]:
+    """Rank documents against a pre-tokenized corpus (avoids re-tokenizing a cached corpus)."""
+    if len(corpus_tokens) != len(documents):
+        raise ValueError("corpus_tokens and documents must have the same length")
     query_tokens = tokenize_hybrid_text(query)
     if not query_tokens or not documents or limit < 1:
         return []
-    corpus_tokens = [tokenize_hybrid_text(document) for document in documents]
-    scorer = _create_bm25_scorer(corpus_tokens)
-    scores = scorer.get_scores(query_tokens)
+    active_scorer = scorer if scorer is not None else _create_bm25_scorer(corpus_tokens)
+    scores = active_scorer.get_scores(query_tokens)
     query_token_set = set(query_tokens)
     ranks = [
         Bm25Rank(index=index, score=float(scores[index]))
@@ -112,6 +130,11 @@ def reciprocal_rank_fusion(
         )
     )
     return fused[: max(limit, 0)]
+
+
+def build_bm25_scorer(corpus_tokens: Sequence[Sequence[str]]) -> _Bm25Scorer:
+    """Build a BM25L scorer over a tokenized corpus (expensive; cache the result)."""
+    return _create_bm25_scorer(corpus_tokens)
 
 
 def _create_bm25_scorer(corpus_tokens: Sequence[Sequence[str]]) -> _Bm25Scorer:

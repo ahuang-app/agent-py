@@ -20,6 +20,7 @@ from super_ai.memory.repositories import (
 )
 from super_ai.memory.vector_scope import build_vector_chunk_metadata
 from super_ai.observability import elapsed_ms, emit_event
+from super_ai.retrieval.corpus_cache import Bm25CorpusCache
 from super_ai.vector_store import VectorChunkRecord
 
 DEFAULT_CHUNK_SIZE = 1200
@@ -87,6 +88,7 @@ class DocumentIndexingService:
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
         budget_service: LlmBudgetService | None = None,
+        corpus_cache: Bm25CorpusCache | None = None,
     ) -> None:
         self._repositories = repositories
         self._embedding_model = embedding_model
@@ -94,6 +96,7 @@ class DocumentIndexingService:
         self._chunk_size = chunk_size
         self._chunk_overlap = chunk_overlap
         self._budget_service = budget_service
+        self._corpus_cache = corpus_cache
 
     async def run_task(self, *, owner_user_id: str, task_id: str) -> DocumentIndexTaskRecord:
         """Run a persisted index task and return its final state."""
@@ -166,6 +169,11 @@ class DocumentIndexingService:
                     for chunk, vector in zip(chunks, vectors, strict=True)
                 ]
             )
+            if self._corpus_cache is not None:
+                self._corpus_cache.invalidate(
+                    owner_user_id=owner_user_id,
+                    knowledge_base_ids=[document.knowledge_base_id],
+                )
         except Exception as exc:
             reason = _safe_failure_reason(exc)
             await self._repositories.documents.update_index_status(

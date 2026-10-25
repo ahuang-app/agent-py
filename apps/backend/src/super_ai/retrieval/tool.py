@@ -14,11 +14,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from super_ai.llm import EmbeddingModel, LlmBudgetService, RerankModel, estimate_text_tokens
 from super_ai.vector_store import StoredVectorChunk, VectorSearchResult
 
+from .corpus_cache import Bm25CorpusCache
 from .hybrid import (
     BM25_CANDIDATE_LIMIT,
     RRF_K,
     Bm25Rank,
     rank_bm25_documents,
+    rank_bm25_tokenized,
     reciprocal_rank_fusion,
 )
 
@@ -185,11 +187,13 @@ class KnowledgeRetrievalTool:
         vector_store: RetrievalVectorStore,
         rerank_model: RerankModel,
         budget_service: LlmBudgetService | None = None,
+        corpus_cache: Bm25CorpusCache | None = None,
     ) -> None:
         self._embedding_model = embedding_model
         self._vector_store = vector_store
         self._rerank_model = rerank_model
         self._budget_service = budget_service
+        self._corpus_cache = corpus_cache
 
     async def run(
         self,
@@ -313,6 +317,41 @@ class KnowledgeRetrievalTool:
         knowledge_base_ids: Sequence[str],
         filters: KnowledgeRetrievalFilters,
     ) -> tuple[list[StoredVectorChunk], list[Bm25Rank]]:
+        if self._corpus_cache is not None:
+            context = await asyncio.to_thread(
+                self._corpus_cache.get_ranking_context,
+                owner_user_id=owner_user_id,
+                knowledge_base_ids=knowledge_base_ids,
+                loader=lambda: self._vector_store.list_chunks(
+                    tenant_id=owner_user_id,
+                    knowledge_base_ids=knowledge_base_ids,
+                ),
+            )
+            matches = [
+                index
+                for index, chunk in enumerate(context.chunks)
+                if _chunk_matches(
+                    chunk,
+                    owner_user_id=owner_user_id,
+                    knowledge_base_ids=knowledge_base_ids,
+                    filters=filters,
+                )
+            ]
+            filtered_chunks = [context.chunks[index] for index in matches]
+            filtered_tokens = [context.tokenized[index] for index in matches]
+            has_extra_filters = bool(
+                filters.document_ids or filters.metadata
+            )
+            ranks = await asyncio.to_thread(
+                rank_bm25_tokenized,
+                query=query,
+                corpus_tokens=filtered_tokens,
+                documents=[chunk.content for chunk in filtered_chunks],
+                limit=BM25_CANDIDATE_LIMIT,
+                # 无附加过滤时复用缓存评分器；带过滤则按过滤后子集重建（IDF 语义正确）。
+                scorer=None if has_extra_filters else context.scorer,
+            )
+            return filtered_chunks, ranks
         chunks = await asyncio.to_thread(
             self._vector_store.list_chunks,
             tenant_id=owner_user_id,
@@ -441,17 +480,34 @@ def _filter_chunks(
     knowledge_base_ids: Sequence[str],
     filters: KnowledgeRetrievalFilters,
 ) -> list[ScopedChunkT]:
-    allowed_knowledge_base_ids = set(knowledge_base_ids)
-    requested_document_ids = set(filters.document_ids)
     return [
         hit
         for hit in hits
-        if hit.owner_user_id == owner_user_id
+        if _chunk_matches(
+            hit,
+            owner_user_id=owner_user_id,
+            knowledge_base_ids=knowledge_base_ids,
+            filters=filters,
+        )
+    ]
+
+
+def _chunk_matches(
+    hit: _ScopedChunk,
+    *,
+    owner_user_id: str,
+    knowledge_base_ids: Sequence[str],
+    filters: KnowledgeRetrievalFilters,
+) -> bool:
+    allowed_knowledge_base_ids = set(knowledge_base_ids)
+    requested_document_ids = set(filters.document_ids)
+    return (
+        hit.owner_user_id == owner_user_id
         and hit.tenant_id == owner_user_id
         and hit.knowledge_base_id in allowed_knowledge_base_ids
         and (not requested_document_ids or hit.document_id in requested_document_ids)
         and _metadata_matches(hit.metadata, filters.metadata)
-    ]
+    )
 
 
 def _metadata_matches(

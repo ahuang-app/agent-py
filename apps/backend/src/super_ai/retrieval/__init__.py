@@ -1,5 +1,6 @@
 """Knowledge retrieval tool boundary."""
 
+from super_ai.retrieval.corpus_cache import Bm25CorpusCache, CorpusRankingContext
 from super_ai.retrieval.tool import (
     DEFAULT_RETRIEVAL_TOP_K,
     KNOWLEDGE_RETRIEVAL_TOOL_NAME,
@@ -16,6 +17,8 @@ from super_ai.retrieval.tool import (
 )
 
 __all__ = [
+    "Bm25CorpusCache",
+    "CorpusRankingContext",
     "DEFAULT_RETRIEVAL_TOP_K",
     "KNOWLEDGE_RETRIEVAL_TOOL_NAME",
     "MAX_RETRIEVAL_TOP_K",

@@ -130,7 +130,7 @@ from super_ai.project_config import (
     required_int,
     required_str,
 )
-from super_ai.retrieval import KnowledgeRetrievalTool, RetrievalVectorStore
+from super_ai.retrieval import Bm25CorpusCache, KnowledgeRetrievalTool, RetrievalVectorStore
 from super_ai.vector_store import (
     MilvusHealthCheckResult,
     VectorChunkRecord,
@@ -332,6 +332,7 @@ def create_app(
     aiops_diagnostic_runner: AiopsDiagnosticRunner | None = None,
     alert_provider: ActiveAlertProvider | None = None,
     index_task_scheduler: DocumentIndexTaskScheduler | None = None,
+    bm25_corpus_cache: Bm25CorpusCache | None = None,
 ) -> FastAPI:
     """Create the backend API application."""
     resolved_project_config_path = (
@@ -365,6 +366,7 @@ def create_app(
     app.state.project_config_path = resolved_project_config_path
     app.state.memory_engine = engine
     app.state.memory_session_factory = session_factory
+    app.state.bm25_corpus_cache = bm25_corpus_cache or Bm25CorpusCache()
     app.state.auth_service = AuthService(SQLiteAuthRepository(session_factory))
     repositories = create_sqlite_memory_repositories(session_factory)
     app.state.memory_repositories = repositories
@@ -2197,6 +2199,7 @@ def _chat_agent_runner(request: Request) -> ChatAgentRunner:
             vector_store=cast(RetrievalVectorStore, _vector_store(request)),
             rerank_model=_rerank_model(request),
             budget_service=_llm_budget_service(request),
+            corpus_cache=cast(Bm25CorpusCache, request.app.state.bm25_corpus_cache),
         )
         runner = LangChainChatAgentRunner(
             llm_provider=_llm_provider(request),
@@ -2242,6 +2245,7 @@ def _aiops_diagnostic_runner(request: Request) -> AiopsDiagnosticRunner:
                 vector_store=cast(RetrievalVectorStore, _vector_store(request)),
                 rerank_model=_rerank_model(request),
                 budget_service=_llm_budget_service(request),
+                corpus_cache=cast(Bm25CorpusCache, request.app.state.bm25_corpus_cache),
             ),
             mcp_client_provider=_mcp_connection_service(request),
             cls_region=required_str(cls_log_config, "region"),
@@ -2262,6 +2266,7 @@ def _document_indexing_service(request: Request) -> DocumentIndexingService:
         embedding_model=_embedding_model(request),
         vector_store=_document_vector_store(request),
         budget_service=_llm_budget_service(request),
+        corpus_cache=cast(Bm25CorpusCache, request.app.state.bm25_corpus_cache),
     )
 
 
@@ -2275,6 +2280,7 @@ def _document_indexing_service_from_app(app: FastAPI) -> DocumentIndexingService
         ).create_embedding_model(),
         vector_store=cast(DocumentVectorStoreProvider, app.state.vector_store),
         budget_service=_llm_budget_service_from_app(app),
+        corpus_cache=cast(Bm25CorpusCache, getattr(app.state, "bm25_corpus_cache", None)),
     )
 
 
@@ -2825,3 +2831,9 @@ def _delete_document_vectors(
         raise
     except Exception as exc:
         raise ApiErrorException("SYSTEM_INTERNAL_ERROR") from exc
+    corpus_cache = getattr(request.app.state, "bm25_corpus_cache", None)
+    if isinstance(corpus_cache, Bm25CorpusCache):
+        corpus_cache.invalidate(
+            owner_user_id=tenant_id,
+            knowledge_base_ids=[knowledge_base_id],
+        )
