@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from time import monotonic
+from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -47,11 +50,36 @@ class McpConnectionService:
         default_url: str,
         default_timeout_seconds: int,
         default_retries: int,
+        tools_cache_ttl_seconds: float = 300.0,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._repositories = repositories
         self._default_url = default_url
         self._default_timeout_seconds = default_timeout_seconds
         self._default_retries = default_retries
+        self._tools_cache_ttl_seconds = tools_cache_ttl_seconds
+        self._clock = clock or monotonic
+        self._tools_cache: dict[str, tuple[list[Any], float]] = {}
+
+    def _invalidate_tools_cache(self, owner_user_id: str) -> None:
+        self._tools_cache.pop(owner_user_id, None)
+
+    async def tools_for_user(self, *, owner_user_id: str) -> list[Any]:
+        """Return the user's live LangChain MCP tools, cached per owner.
+
+        每次对话请求都做一次 MCP 工具发现（每个连接一轮网络往返 ×2：discover +
+        get_tools）。缓存按 owner 维度保存工具列表，连接 CRUD/check 显式失效，
+        TTL 只作为外部直接改动存储时的兜底。工具对象由 langchain-mcp-adapters
+        按调用建立会话，跨请求复用安全。
+        """
+        cached = self._tools_cache.get(owner_user_id)
+        now = self._clock()
+        if cached is not None and now - cached[1] <= self._tools_cache_ttl_seconds:
+            return cached[0]
+        client = await self.client_for_user(owner_user_id=owner_user_id)
+        tools = await client.get_langchain_tools()
+        self._tools_cache[owner_user_id] = (tools, self._clock())
+        return tools
 
     async def list(self, *, owner_user_id: str) -> list[McpConnectionRecord]:
         repository = self._repository()
@@ -82,7 +110,7 @@ class McpConnectionService:
         retries: int,
     ) -> McpConnectionRecord:
         values = _validated_connection(name, transport, url, timeout_seconds, retries)
-        return await self._repository().create(
+        record = await self._repository().create(
             owner_user_id=owner_user_id,
             connection_id=f"mcp_{uuid4().hex}",
             enabled=enabled,
@@ -92,6 +120,8 @@ class McpConnectionService:
             timeout_seconds=values.timeout_seconds,
             retries=values.retries,
         )
+        self._invalidate_tools_cache(owner_user_id)
+        return record
 
     async def update(
         self,
@@ -118,13 +148,17 @@ class McpConnectionService:
         )
         if record is None:
             raise McpConnectionError("AUTH_FORBIDDEN", "MCP connection is not accessible.")
+        self._invalidate_tools_cache(owner_user_id)
         return record
 
     async def delete(self, *, owner_user_id: str, connection_id: str) -> bool:
-        return await self._repository().delete(
+        deleted = await self._repository().delete(
             owner_user_id=owner_user_id,
             connection_id=connection_id,
         )
+        if deleted:
+            self._invalidate_tools_cache(owner_user_id)
+        return deleted
 
     async def check(
         self, *, owner_user_id: str, connection_id: str
@@ -152,6 +186,7 @@ class McpConnectionService:
         )
         if updated is None:
             raise McpConnectionError("AUTH_FORBIDDEN", "MCP connection is not accessible.")
+        self._invalidate_tools_cache(owner_user_id)
         return updated, tools
 
     async def client_for_user(self, *, owner_user_id: str) -> LocalMcpClient:

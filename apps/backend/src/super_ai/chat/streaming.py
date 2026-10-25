@@ -524,14 +524,16 @@ class LangChainChatAgentRunner:
         tools = [langchain_tool, create_current_time_tool()]
         if request.skills:
             tools.append(create_load_skill_tool(request.skills))
-        mcp_client = self._mcp_client
         if self._mcp_client_provider is not None:
-            mcp_client = await self._mcp_client_provider.client_for_user(
-                owner_user_id=request.owner_user_id
+            # 走服务级工具缓存：连接 CRUD/check 显式失效，避免每请求两轮发现网络往返
+            tools.extend(
+                await self._mcp_client_provider.tools_for_user(
+                    owner_user_id=request.owner_user_id
+                )
             )
-        if mcp_client is not None:
-            await mcp_client.discover_tools()
-            tools.extend(await mcp_client.get_langchain_tools())
+        elif self._mcp_client is not None:
+            await self._mcp_client.discover_tools()
+            tools.extend(await self._mcp_client.get_langchain_tools())
         agent = _create_langchain_agent(
             model=cast(Any, self._llm_provider.create_chat_model()),
             tools=tools,

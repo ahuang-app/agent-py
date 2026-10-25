@@ -292,6 +292,33 @@ class DocumentIndexTaskScheduler(Protocol):
         ...
 
 
+VECTOR_STORE_WARMUP_TIMEOUT_SECONDS = 20.0
+
+
+async def _warm_up_vector_store(application: FastAPI) -> None:
+    """Eagerly connect Milvus at startup so the first query avoids connect latency.
+
+    有界超时且失败不致命：预热失败只记日志，首个真实请求仍走惰性初始化路径。
+    """
+    vector_store = getattr(application.state, "vector_store", None)
+    initialize = getattr(vector_store, "initialize", None)
+    if not callable(initialize):
+        return
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(initialize),
+            timeout=VECTOR_STORE_WARMUP_TIMEOUT_SECONDS,
+        )
+        logger.info("vector store warmed up at startup")
+    except (TimeoutError, asyncio.TimeoutError):
+        logger.warning(
+            "vector store warmup timed out after %.0fs; falling back to lazy init",
+            VECTOR_STORE_WARMUP_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        logger.warning("vector store warmup failed; falling back to lazy init", exc_info=True)
+
+
 class DurableDocumentIndexTaskScheduler:
     """Enqueue document indexing in the durable background runtime."""
 
@@ -344,6 +371,7 @@ def create_app(
         runtime = cast(BackgroundJobRuntime, application.state.background_job_runtime)
         await runtime.start()
         try:
+            await _warm_up_vector_store(application)
             yield
         finally:
             await runtime.stop()

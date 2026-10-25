@@ -6,12 +6,14 @@ import {
 } from "vue-router";
 
 import WorkspaceLayout from "../layouts/WorkspaceLayout.vue";
-import AuthView from "../views/AuthView.vue";
-import AiopsView from "../views/AiopsView.vue";
-import ChatView from "../views/ChatView.vue";
-import KnowledgeView from "../views/KnowledgeView.vue";
-import McpView from "../views/McpView.vue";
-import WorkspacePlaceholderView from "../views/WorkspacePlaceholderView.vue";
+
+// 路由级代码分割：各业务视图与认证页按需加载，KaTeX/Markdown 等重组件
+// 只进入对话与诊断路由的共享 chunk，不再拖累首屏主包。
+const AuthView = () => import("../views/AuthView.vue");
+const AiopsView = () => import("../views/AiopsView.vue");
+const ChatView = () => import("../views/ChatView.vue");
+const KnowledgeView = () => import("../views/KnowledgeView.vue");
+const McpView = () => import("../views/McpView.vue");
 
 export interface AuthRouteAccess {
   initialize(): Promise<void>;

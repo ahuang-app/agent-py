@@ -49,7 +49,12 @@ def create_memory_engine(
     resolved_url = settings.database_url if settings is not None else database_url
     if resolved_url is None:
         resolved_url = DEFAULT_MEMORY_DATABASE_URL
-    return create_async_engine(resolved_url, echo=echo)
+    connect_args: dict[str, object] = {}
+    if resolved_url.startswith("sqlite"):
+        # 后台 worker 写任务状态时与读请求竞争数据库锁；加长 busy timeout
+        # 让读侧等待写事务提交，而不是立刻抛 "database is locked"（实测表现为瞬时 500）。
+        connect_args["timeout"] = 30
+    return create_async_engine(resolved_url, echo=echo, connect_args=connect_args)
 
 
 def create_memory_session_factory(
